@@ -149,7 +149,7 @@ impl From<Type> for u8 {
 #[doc(alias = "DVLB_s")]
 pub struct Library {
     dvlb: *mut ctru_sys::DVLB_s,
-    bytes: Cow<'static, [u8]>
+    _bytes: Cow<'static, [u8]>
 }
 
 impl Library {
@@ -176,7 +176,7 @@ impl Library {
 
         Ok(Self {
             dvlb,
-            bytes,
+            _bytes: bytes,
         })
     }
 
