@@ -1,15 +1,12 @@
-//! This example demonstrates the most basic usage of `citro3d`: rendering a simple
-//! RGB triangle (sometimes called a "Hello triangle") to the 3DS screen.
-
 #![feature(allocator_api)]
 
 use citro3d::macros::include_shader;
-use citro3d::math::{AspectRatio, ClipPlanes, Matrix4, Projection, StereoDisplacement};
+use citro3d::math::{ClipPlanes, Matrix4, Projection};
 use citro3d::render::{ClearFlags, Frame, ScreenTarget, Target};
 use citro3d::texenv;
 use citro3d::{attrib, buffer, shader};
 use ctru::prelude::*;
-use ctru::services::gfx::{RawFrameBuffer, Screen, TopScreen3D};
+use ctru::services::gfx::{RawFrameBuffer, Screen};
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -34,25 +31,29 @@ struct Vertex {
 
 static VERTICES: &[Vertex] = &[
     Vertex {
-        pos: Vec3::new(0.0, 0.5, -3.0),
+        pos: Vec3::new(200.0, 200.0, -0.5),
         color: Vec3::new(1.0, 0.0, 0.0),
     },
     Vertex {
-        pos: Vec3::new(-0.5, -0.5, -3.0),
+        pos: Vec3::new(100.0, 40.0, -0.5),
         color: Vec3::new(0.0, 1.0, 0.0),
     },
     Vertex {
-        pos: Vec3::new(0.5, -0.5, -3.0),
+        pos: Vec3::new(300.0, 40.0, -0.5),
         color: Vec3::new(0.0, 0.0, 1.0),
     },
 ];
 
-static SHADER_BYTES: &[u8] = include_shader!("assets/vshader.pica");
+static VERTEX_SHADER: &[u8] = include_shader!("assets/vshader_geo.pica");
+static GEOMETRY_SHADER: &[u8] = include_shader!("assets/gshader_geo.pica");
+
 const CLEAR_COLOR: u32 = 0x68_B0_D8_FF;
 
 fn main() {
     let mut soc = Soc::new().expect("failed to get SOC");
     drop(soc.redirect_to_3dslink(true, true));
+
+    println!("soc initialized");
 
     let gfx = Gfx::new().expect("Couldn't obtain GFX controller");
     let mut hid = Hid::new().expect("Couldn't obtain HID controller");
@@ -60,18 +61,11 @@ fn main() {
 
     let mut instance = citro3d::Instance::new().expect("failed to initialize Citro3D");
 
-    let top_screen = TopScreen3D::from(&gfx.top_screen);
-
-    let (mut top_left, mut top_right) = top_screen.split_mut();
-
-    let RawFrameBuffer { width, height, .. } = top_left.raw_framebuffer();
-    let mut top_left_target = instance
-        .render_target(width, height, top_left, None)
-        .expect("failed to create render target");
-
-    let RawFrameBuffer { width, height, .. } = top_right.raw_framebuffer();
-    let mut top_right_target = instance
-        .render_target(width, height, top_right, None)
+    let mut top_screen = gfx.top_screen.borrow_mut();
+    let RawFrameBuffer { width, height, .. } = top_screen.raw_framebuffer();
+    
+    let mut top_target = instance
+        .render_target(width, height, top_screen, None)
         .expect("failed to create render target");
 
     let mut bottom_screen = gfx.bottom_screen.borrow_mut();
@@ -81,11 +75,16 @@ fn main() {
         .render_target(width, height, bottom_screen, None)
         .expect("failed to create bottom screen render target");
 
-    let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
-    let vertex_shader = shader.get(0).unwrap();
+    let vertex_library = shader::Library::from_bytes(VERTEX_SHADER).unwrap();
+    let vertex_shader = vertex_library.get(0).unwrap();
 
-    let program = shader::Program::new(vertex_shader).unwrap();
-    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
+    let geometry_library = shader::Library::from_bytes(GEOMETRY_SHADER).unwrap();
+    let geometry_shader = geometry_library.get(0).unwrap();
+
+    let mut program = shader::Program::new(vertex_shader).unwrap();
+    program.set_geometry_shader(geometry_shader, 6).unwrap();
+
+    let projection_uniform_idx = program.get_geometry_uniform("projection").unwrap();
 
     let vbo_data = buffer::Buffer::new(VERTICES);
 
@@ -95,6 +94,15 @@ fn main() {
     let stage0 = texenv::TexEnv::new()
         .src(texenv::Mode::BOTH, texenv::Source::PrimaryColor, None, None)
         .func(texenv::Mode::BOTH, texenv::CombineFunc::Replace);
+
+    let projection = Projection::orthographic(
+        0.0..240.0,
+        0.0..400.0,
+        ClipPlanes {
+            near: 0.0,
+            far: 1.0,
+        },
+    ).into();
 
     while apt.main_loop() {
         hid.scan_input();
@@ -117,32 +125,22 @@ fn main() {
                 frame
                     .select_render_target(target)
                     .expect("failed to set render target");
-                frame.bind_vertex_uniform(projection_uniform_idx, projection);
+                frame.bind_geometry_uniform(projection_uniform_idx, projection);
 
                 frame.set_texenvs(&[stage0]);
 
                 frame.set_attr_info(&attr_info);
 
                 frame
-                    .draw_arrays(buffer::Primitive::Triangles, &buf_info, None)
+                    .draw_arrays(buffer::Primitive::GeometryPrim, &buf_info, None)
                     .unwrap();
             });
 
-            // We bind the vertex shader.
+            // We bind the vertex and geometry shaders.
             frame.bind_program(&program);
 
-            // Configure the first fragment shading substage to just pass through the vertex color
-            // See https://www.opengl.org/sdk/docs/man2/xhtml/glTexEnv.xml for more insight
-
-            let Projections {
-                left_eye,
-                right_eye,
-                center,
-            } = calculate_projections();
-
-            render_to(&mut frame, &mut top_left_target, &left_eye);
-            render_to(&mut frame, &mut top_right_target, &right_eye);
-            render_to(&mut frame, &mut bottom_target, &center);
+            render_to(&mut frame, &mut top_target, &projection);
+            render_to(&mut frame, &mut bottom_target, &projection);
 
             frame
         });
@@ -164,40 +162,4 @@ fn prepare_vbos(buf_info: &mut buffer::Info, vbo_data: buffer::Buffer) -> attrib
     buf_info.add(vbo_data, attr_info.permutation()).unwrap();
 
     attr_info
-}
-
-struct Projections {
-    left_eye: Matrix4,
-    right_eye: Matrix4,
-    center: Matrix4,
-}
-
-fn calculate_projections() -> Projections {
-    // TODO: it would be cool to allow playing around with these parameters on
-    // the fly with D-pad, etc.
-    let slider_val = ctru::os::current_3d_slider_state();
-    let interocular_distance = slider_val / 2.0;
-
-    let vertical_fov = 40.0_f32.to_radians();
-    let screen_depth = 2.0;
-
-    let clip_planes = ClipPlanes {
-        near: 0.01,
-        far: 100.0,
-    };
-
-    let (left, right) = StereoDisplacement::new(interocular_distance, screen_depth);
-
-    let (left_eye, right_eye) =
-        Projection::perspective(vertical_fov, AspectRatio::TopScreen, clip_planes)
-            .stereo_matrices(left, right);
-
-    let center =
-        Projection::perspective(vertical_fov, AspectRatio::BottomScreen, clip_planes).into();
-
-    Projections {
-        left_eye,
-        right_eye,
-        center,
-    }
 }

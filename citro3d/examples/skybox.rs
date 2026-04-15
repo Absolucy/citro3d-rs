@@ -129,10 +129,11 @@ fn main() {
         .expect("failed to create bottom screen render target");
 
     let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
+    let vertex_shader = shader.get(0).unwrap();
 
-    let program = shader::Program::new(shader, 0).unwrap();
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
-    let model_view_uniform_idx = program.get_uniform("modelView").unwrap();
+    let program = shader::Program::new(vertex_shader).unwrap();
+    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
+    let model_view_uniform_idx = program.get_vertex_uniform("modelView").unwrap();
 
     let vbo_data = buffer::Buffer::new(VERTICES);
     let mut buf_info = buffer::Info::new();

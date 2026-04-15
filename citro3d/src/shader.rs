@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::ffi::CString;
 use std::mem::MaybeUninit;
+use std::rc::Rc;
 
 use crate::uniform;
 
@@ -21,7 +22,8 @@ use crate::uniform;
 #[must_use]
 pub struct Program {
     program: ctru_sys::shaderProgram_s,
-    _shader: Library,
+    _vsh: Entrypoint,
+    gsh: Option<Entrypoint>,
 }
 
 impl Program {
@@ -31,15 +33,10 @@ impl Program {
     ///
     /// Returns an error if:
     /// * the shader program cannot be initialized
-    /// * the shader at the specified index is not a vertex shader or is otherwise invalid or
-    /// missing 
+    /// * the input shader is not a vertex shader or is otherwise invalid
     #[doc(alias = "shaderProgramInit")]
     #[doc(alias = "shaderProgramSetVsh")]
-    pub fn new(shader: Library, vertex_shader_index: usize) -> Result<Self, ctru::Error> {
-        let vertex_shader = shader
-            .get(vertex_shader_index)
-            .ok_or_else(|| ctru::Error::Other(String::from("Invalid index")))?;
-
+    pub fn new(mut vertex_shader: Entrypoint) -> Result<Self, ctru::Error> {
         let mut program = unsafe {
             let mut program = MaybeUninit::uninit();
             let result = ctru_sys::shaderProgramInit(program.as_mut_ptr());
@@ -54,7 +51,8 @@ impl Program {
         if ret == 0 {
             Ok(Self {
                 program,
-                _shader: shader,
+                _vsh: vertex_shader,
+                gsh: None,
             })
         } else {
             Err(ctru::Error::from(ret))
@@ -70,7 +68,7 @@ impl Program {
     #[doc(alias = "shaderProgramSetGsh")]
     pub fn set_geometry_shader(
         &mut self,
-        geometry_shader: Entrypoint,
+        mut geometry_shader: Entrypoint,
         stride: u8,
     ) -> Result<(), ctru::Error> {
         let ret = unsafe {
@@ -78,20 +76,21 @@ impl Program {
         };
 
         if ret == 0 {
+            self.gsh = Some(geometry_shader);
             Ok(())
         } else {
             Err(ctru::Error::from(ret))
         }
     }
 
-    /// Get the index of a uniform by name.
+    /// Get the index of a uniform in the vertex shader by name.
     ///
     /// # Errors
     ///
     /// * If the given `name` contains a null byte
     /// * If a uniform with the given `name` could not be found
     #[doc(alias = "shaderInstanceGetUniformLocation")]
-    pub fn get_uniform(&self, name: &str) -> crate::Result<uniform::Index> {
+    pub fn get_vertex_uniform(&self, name: &str) -> crate::Result<uniform::Index> {
         let vertex_instance = unsafe { (*self.as_raw()).vertexShader };
         assert!(
             !vertex_instance.is_null(),
@@ -102,6 +101,33 @@ impl Program {
 
         let idx =
             unsafe { ctru_sys::shaderInstanceGetUniformLocation(vertex_instance, name.as_ptr()) };
+
+        if idx < 0 {
+            Err(crate::Error::NotFound)
+        } else {
+            Ok((idx as u8).into())
+        }
+    }
+
+    /// Get the index of a uniform in the geometry shader by name.
+    ///
+    /// # Errors
+    ///
+    /// * If a geometry shader has not been set
+    /// * If the given `name` contains a null byte
+    /// * If a uniform with the given `name` could not be found
+    #[doc(alias = "shaderInstanceGetUniformLocation")]
+    pub fn get_geometry_uniform(&self, name: &str) -> crate::Result<uniform::Index> {
+        if self.gsh.is_none() {
+            return Err(crate::Error::MissingProgram);
+        }
+
+        let geometry_instance = unsafe { (*self.as_raw()).geometryShader };
+
+        let name = CString::new(name)?;
+
+        let idx =
+            unsafe { ctru_sys::shaderInstanceGetUniformLocation(geometry_instance, name.as_ptr()) };
 
         if idx < 0 {
             Err(crate::Error::NotFound)
@@ -149,7 +175,7 @@ impl From<Type> for u8 {
 #[doc(alias = "DVLB_s")]
 pub struct Library {
     dvlb: *mut ctru_sys::DVLB_s,
-    _bytes: Cow<'static, [u8]>
+    _bytes: Cow<'static, [u8]>,
 }
 
 impl Library {
@@ -195,11 +221,27 @@ impl Library {
 
     /// Get the [`Entrypoint`] at the given index, if present.
     #[must_use]
-    pub fn get(&self, index: usize) -> Option<Entrypoint<'_>> {
+    pub fn get(self, index: usize) -> Option<Entrypoint> {
         if index < self.len() {
             Some(Entrypoint {
                 ptr: unsafe { (*self.dvlb).DVLE.add(index) },
-                _library: self,
+                _library: MaybeRc::Owned(self),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    /// Get the [`Entrypoint`] at the given index, if present.
+    ///
+    /// Like [`Library::get`], except takes `Rc<Self>` instead of `Self`, to allow the same library
+    /// to have multiple entrypoints
+    pub fn get_shared(self: Rc<Self>, index: usize) -> Option<Entrypoint> {
+        if index < self.len() {
+            Some(Entrypoint {
+                ptr: unsafe { (*self.dvlb).DVLE.add(index) },
+                _library: MaybeRc::Shared(self),
             })
         } else {
             None
@@ -220,16 +262,21 @@ impl Drop for Library {
     }
 }
 
-/// A shader library entrypoint (also called DVLE). This represents either a
-/// vertex or a geometry shader.
-#[derive(Clone, Copy)]
-pub struct Entrypoint<'lib> {
-    ptr: *mut ctru_sys::DVLE_s,
-    _library: &'lib Library,
+#[allow(dead_code)]
+enum MaybeRc<T> {
+    Owned(T),
+    Shared(Rc<T>),
 }
 
-impl<'lib> Entrypoint<'lib> {
-    fn as_raw(self) -> *mut ctru_sys::DVLE_s {
+/// A shader library entrypoint (also called DVLE). This represents either a
+/// vertex or a geometry shader.
+pub struct Entrypoint {
+    ptr: *mut ctru_sys::DVLE_s,
+    _library: MaybeRc<Library>,
+}
+
+impl Entrypoint {
+    fn as_raw(&mut self) -> *mut ctru_sys::DVLE_s {
         self.ptr
     }
 }

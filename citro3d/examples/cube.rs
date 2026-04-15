@@ -102,8 +102,9 @@ fn main() {
         .expect("failed to create bottom screen render target");
 
     let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
+    let vertex_shader = shader.get(0).unwrap();
 
-    let program = shader::Program::new(shader, 0).unwrap();
+    let program = shader::Program::new(vertex_shader).unwrap();
 
     let mut vbo_data = Vec::with_capacity_in(VERTS.len(), ctru::linear::LinearAllocator);
     for vert in VERTS.iter().enumerate().map(|(i, v)| Vertex {
@@ -127,7 +128,7 @@ fn main() {
     let mut buf_info = buffer::Info::new();
     buf_info.add(vbo_data, attr_info.permutation()).unwrap();
 
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
+    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
     let camera_transform = Matrix4::looking_at(
         FVec3::new(1.8, 1.8, 1.8),
         FVec3::new(0.0, 0.0, 0.0),

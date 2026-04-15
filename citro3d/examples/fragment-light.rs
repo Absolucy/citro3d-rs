@@ -281,8 +281,9 @@ fn main() {
         .expect("failed to create bottom screen render target");
 
     let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
+    let vertex_shader = shader.get(0).unwrap();
 
-    let program = shader::Program::new(shader, 0).unwrap();
+    let program = shader::Program::new(vertex_shader).unwrap();
 
     let vbo_data = buffer::Buffer::new(VERTICES);
     let mut buf_info = buffer::Info::new();
@@ -333,10 +334,10 @@ fn main() {
 
     // Setup the rotating view of the cube
     let mut view = Matrix4::identity();
-    let model_idx = program.get_uniform("modelView").unwrap();
+    let model_idx = program.get_vertex_uniform("modelView").unwrap();
     view.translate(0.0, 0.0, -2.0);
 
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
+    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
 
     let stage0 = texenv::TexEnv::new()
         .src(

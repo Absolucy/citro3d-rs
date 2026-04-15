@@ -2,7 +2,6 @@
 
 #![feature(allocator_api)]
 
-use citro3d::macros::include_shader;
 use citro3d::math::{AspectRatio, ClipPlanes, Matrix4, Projection, StereoDisplacement};
 use citro3d::render::{ClearFlags, Frame, ScreenTarget, Target};
 use citro3d::texenv;
@@ -79,7 +78,6 @@ fn main() {
         .render_target(width, height, bottom_screen, None)
         .expect("failed to create bottom screen render target");
 
-
     let _romfs = ctru::services::romfs::RomFS::new().unwrap();
 
     let shader = {
@@ -87,8 +85,10 @@ fn main() {
         shader::Library::from_bytes(shader_bytes).unwrap()
     };
 
-    let program = shader::Program::new(shader, 0).unwrap();
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
+    let vertex_shader = shader.get(0).unwrap();
+
+    let program = shader::Program::new(vertex_shader).unwrap();
+    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
 
     let vbo_data = buffer::Buffer::new(VERTICES);
 
