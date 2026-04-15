@@ -4,6 +4,7 @@
 //! For more details about the PICA200 compiler / shader language, see
 //! documentation for <https://github.com/devkitPro/picasso>.
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::ffi::CString;
 use std::mem::MaybeUninit;
@@ -20,6 +21,7 @@ use crate::uniform;
 #[must_use]
 pub struct Program {
     program: ctru_sys::shaderProgram_s,
+    _shader: Library,
 }
 
 impl Program {
@@ -29,10 +31,15 @@ impl Program {
     ///
     /// Returns an error if:
     /// * the shader program cannot be initialized
-    /// * the input shader is not a vertex shader or is otherwise invalid
+    /// * the shader at the specified index is not a vertex shader or is otherwise invalid or
+    /// missing 
     #[doc(alias = "shaderProgramInit")]
     #[doc(alias = "shaderProgramSetVsh")]
-    pub fn new(vertex_shader: Entrypoint) -> Result<Self, ctru::Error> {
+    pub fn new(shader: Library, vertex_shader_index: usize) -> Result<Self, ctru::Error> {
+        let vertex_shader = shader
+            .get(vertex_shader_index)
+            .ok_or_else(|| ctru::Error::Other(String::from("Invalid index")))?;
+
         let mut program = unsafe {
             let mut program = MaybeUninit::uninit();
             let result = ctru_sys::shaderProgramInit(program.as_mut_ptr());
@@ -45,7 +52,10 @@ impl Program {
         let ret = unsafe { ctru_sys::shaderProgramSetVsh(&mut program, vertex_shader.as_raw()) };
 
         if ret == 0 {
-            Ok(Self { program })
+            Ok(Self {
+                program,
+                _shader: shader,
+            })
         } else {
             Err(ctru::Error::from(ret))
         }
@@ -137,7 +147,10 @@ impl From<Type> for u8 {
 /// This is the result of parsing a shader binary (`.shbin`), and the resulting
 /// [`Entrypoint`]s can be used as part of a [`Program`].
 #[doc(alias = "DVLB_s")]
-pub struct Library(*mut ctru_sys::DVLB_s);
+pub struct Library {
+    dvlb: *mut ctru_sys::DVLB_s,
+    bytes: Cow<'static, [u8]>
+}
 
 impl Library {
     /// Parse a new shader library from input bytes.
@@ -147,9 +160,11 @@ impl Library {
     /// An error is returned if the input data does not have an alignment of 4
     /// (cannot be safely converted to `&[u32]`).
     #[doc(alias = "DVLB_ParseFile")]
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let aligned: &[u32] = bytemuck::try_cast_slice(bytes)?;
-        Ok(Self(unsafe {
+    pub fn from_bytes<B: Into<Cow<'static, [u8]>>>(bytes: B) -> Result<Self, Box<dyn Error>> {
+        let bytes = bytes.into();
+
+        let aligned: &[u32] = bytemuck::try_cast_slice(&bytes)?;
+        let dvlb = unsafe {
             ctru_sys::DVLB_ParseFile(
                 // SAFETY: we're trusting the parse implementation doesn't mutate
                 // the contents of the data. From a quick read it looks like that's
@@ -157,14 +172,19 @@ impl Library {
                 aligned.as_ptr().cast_mut(),
                 aligned.len().try_into()?,
             )
-        }))
+        };
+
+        Ok(Self {
+            dvlb,
+            bytes,
+        })
     }
 
     /// Get the number of [`Entrypoint`]s in this shader library.
     #[must_use]
     #[doc(alias = "numDVLE")]
     pub fn len(&self) -> usize {
-        unsafe { (*self.0).numDVLE as usize }
+        unsafe { (*self.dvlb).numDVLE as usize }
     }
 
     /// Whether the library has any [`Entrypoint`]s or not.
@@ -178,7 +198,7 @@ impl Library {
     pub fn get(&self, index: usize) -> Option<Entrypoint<'_>> {
         if index < self.len() {
             Some(Entrypoint {
-                ptr: unsafe { (*self.0).DVLE.add(index) },
+                ptr: unsafe { (*self.dvlb).DVLE.add(index) },
                 _library: self,
             })
         } else {
@@ -187,7 +207,7 @@ impl Library {
     }
 
     fn as_raw(&mut self) -> *mut ctru_sys::DVLB_s {
-        self.0
+        self.dvlb
     }
 }
 

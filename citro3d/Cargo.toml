@@ -39,3 +39,6 @@ all-features = true
 default-target = "armv6k-nintendo-3ds"
 targs = []
 cargo-args = ["-Z", "build-std"]
+
+[package.metadata.cargo-3ds]
+romfs_dir = "examples/assets/romfs"

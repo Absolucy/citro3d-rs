@@ -1,5 +1,4 @@
-//! This example demonstrates the most basic usage of `citro3d`: rendering a simple
-//! RGB triangle (sometimes called a "Hello triangle") to the 3DS screen.
+// This examples demonstrates loading a shader into memory at runtime
 
 #![feature(allocator_api)]
 
@@ -47,7 +46,6 @@ static VERTICES: &[Vertex] = &[
     },
 ];
 
-static SHADER_BYTES: &[u8] = include_shader!("assets/vshader.pica");
 const CLEAR_COLOR: u32 = 0x68_B0_D8_FF;
 
 fn main() {
@@ -81,7 +79,13 @@ fn main() {
         .render_target(width, height, bottom_screen, None)
         .expect("failed to create bottom screen render target");
 
-    let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
+
+    let _romfs = ctru::services::romfs::RomFS::new().unwrap();
+
+    let shader = {
+        let shader_bytes = std::fs::read("romfs:/vshader.shbin").unwrap();
+        shader::Library::from_bytes(shader_bytes).unwrap()
+    };
 
     let program = shader::Program::new(shader, 0).unwrap();
     let projection_uniform_idx = program.get_uniform("projection").unwrap();
