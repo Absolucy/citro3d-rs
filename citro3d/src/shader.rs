@@ -4,9 +4,11 @@
 //! For more details about the PICA200 compiler / shader language, see
 //! documentation for <https://github.com/devkitPro/picasso>.
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::ffi::CString;
 use std::mem::MaybeUninit;
+use std::rc::Rc;
 
 use crate::uniform;
 
@@ -20,6 +22,8 @@ use crate::uniform;
 #[must_use]
 pub struct Program {
     program: ctru_sys::shaderProgram_s,
+    _vsh: Entrypoint,
+    gsh: Option<Entrypoint>,
 }
 
 impl Program {
@@ -32,7 +36,7 @@ impl Program {
     /// * the input shader is not a vertex shader or is otherwise invalid
     #[doc(alias = "shaderProgramInit")]
     #[doc(alias = "shaderProgramSetVsh")]
-    pub fn new(vertex_shader: Entrypoint) -> Result<Self, ctru::Error> {
+    pub fn new(mut vertex_shader: Entrypoint) -> Result<Self, ctru::Error> {
         let mut program = unsafe {
             let mut program = MaybeUninit::uninit();
             let result = ctru_sys::shaderProgramInit(program.as_mut_ptr());
@@ -45,7 +49,11 @@ impl Program {
         let ret = unsafe { ctru_sys::shaderProgramSetVsh(&mut program, vertex_shader.as_raw()) };
 
         if ret == 0 {
-            Ok(Self { program })
+            Ok(Self {
+                program,
+                _vsh: vertex_shader,
+                gsh: None,
+            })
         } else {
             Err(ctru::Error::from(ret))
         }
@@ -60,7 +68,7 @@ impl Program {
     #[doc(alias = "shaderProgramSetGsh")]
     pub fn set_geometry_shader(
         &mut self,
-        geometry_shader: Entrypoint,
+        mut geometry_shader: Entrypoint,
         stride: u8,
     ) -> Result<(), ctru::Error> {
         let ret = unsafe {
@@ -68,20 +76,21 @@ impl Program {
         };
 
         if ret == 0 {
+            self.gsh = Some(geometry_shader);
             Ok(())
         } else {
             Err(ctru::Error::from(ret))
         }
     }
 
-    /// Get the index of a uniform by name.
+    /// Get the index of a uniform in the vertex shader by name.
     ///
     /// # Errors
     ///
     /// * If the given `name` contains a null byte
     /// * If a uniform with the given `name` could not be found
     #[doc(alias = "shaderInstanceGetUniformLocation")]
-    pub fn get_uniform(&self, name: &str) -> crate::Result<uniform::Index> {
+    pub fn get_vertex_uniform(&self, name: &str) -> crate::Result<uniform::Index> {
         let vertex_instance = unsafe { (*self.as_raw()).vertexShader };
         assert!(
             !vertex_instance.is_null(),
@@ -92,6 +101,33 @@ impl Program {
 
         let idx =
             unsafe { ctru_sys::shaderInstanceGetUniformLocation(vertex_instance, name.as_ptr()) };
+
+        if idx < 0 {
+            Err(crate::Error::NotFound)
+        } else {
+            Ok((idx as u8).into())
+        }
+    }
+
+    /// Get the index of a uniform in the geometry shader by name.
+    ///
+    /// # Errors
+    ///
+    /// * If a geometry shader has not been set
+    /// * If the given `name` contains a null byte
+    /// * If a uniform with the given `name` could not be found
+    #[doc(alias = "shaderInstanceGetUniformLocation")]
+    pub fn get_geometry_uniform(&self, name: &str) -> crate::Result<uniform::Index> {
+        if self.gsh.is_none() {
+            return Err(crate::Error::MissingProgram);
+        }
+
+        let geometry_instance = unsafe { (*self.as_raw()).geometryShader };
+
+        let name = CString::new(name)?;
+
+        let idx =
+            unsafe { ctru_sys::shaderInstanceGetUniformLocation(geometry_instance, name.as_ptr()) };
 
         if idx < 0 {
             Err(crate::Error::NotFound)
@@ -137,7 +173,10 @@ impl From<Type> for u8 {
 /// This is the result of parsing a shader binary (`.shbin`), and the resulting
 /// [`Entrypoint`]s can be used as part of a [`Program`].
 #[doc(alias = "DVLB_s")]
-pub struct Library(*mut ctru_sys::DVLB_s);
+pub struct Library {
+    dvlb: *mut ctru_sys::DVLB_s,
+    _bytes: Cow<'static, [u8]>,
+}
 
 impl Library {
     /// Parse a new shader library from input bytes.
@@ -147,9 +186,11 @@ impl Library {
     /// An error is returned if the input data does not have an alignment of 4
     /// (cannot be safely converted to `&[u32]`).
     #[doc(alias = "DVLB_ParseFile")]
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let aligned: &[u32] = bytemuck::try_cast_slice(bytes)?;
-        Ok(Self(unsafe {
+    pub fn from_bytes<B: Into<Cow<'static, [u8]>>>(bytes: B) -> Result<Self, Box<dyn Error>> {
+        let bytes = bytes.into();
+
+        let aligned: &[u32] = bytemuck::try_cast_slice(&bytes)?;
+        let dvlb = unsafe {
             ctru_sys::DVLB_ParseFile(
                 // SAFETY: we're trusting the parse implementation doesn't mutate
                 // the contents of the data. From a quick read it looks like that's
@@ -157,14 +198,19 @@ impl Library {
                 aligned.as_ptr().cast_mut(),
                 aligned.len().try_into()?,
             )
-        }))
+        };
+
+        Ok(Self {
+            dvlb,
+            _bytes: bytes,
+        })
     }
 
     /// Get the number of [`Entrypoint`]s in this shader library.
     #[must_use]
     #[doc(alias = "numDVLE")]
     pub fn len(&self) -> usize {
-        unsafe { (*self.0).numDVLE as usize }
+        unsafe { (*self.dvlb).numDVLE as usize }
     }
 
     /// Whether the library has any [`Entrypoint`]s or not.
@@ -175,11 +221,27 @@ impl Library {
 
     /// Get the [`Entrypoint`] at the given index, if present.
     #[must_use]
-    pub fn get(&self, index: usize) -> Option<Entrypoint<'_>> {
+    pub fn get(self, index: usize) -> Option<Entrypoint> {
         if index < self.len() {
             Some(Entrypoint {
-                ptr: unsafe { (*self.0).DVLE.add(index) },
-                _library: self,
+                ptr: unsafe { (*self.dvlb).DVLE.add(index) },
+                _library: MaybeRc::Owned(self),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    /// Get the [`Entrypoint`] at the given index, if present.
+    ///
+    /// Like [`Library::get`], except takes `Rc<Self>` instead of `Self`, to allow the same library
+    /// to have multiple entrypoints
+    pub fn get_shared(self: Rc<Self>, index: usize) -> Option<Entrypoint> {
+        if index < self.len() {
+            Some(Entrypoint {
+                ptr: unsafe { (*self.dvlb).DVLE.add(index) },
+                _library: MaybeRc::Shared(self),
             })
         } else {
             None
@@ -187,7 +249,7 @@ impl Library {
     }
 
     fn as_raw(&mut self) -> *mut ctru_sys::DVLB_s {
-        self.0
+        self.dvlb
     }
 }
 
@@ -200,16 +262,21 @@ impl Drop for Library {
     }
 }
 
-/// A shader library entrypoint (also called DVLE). This represents either a
-/// vertex or a geometry shader.
-#[derive(Clone, Copy)]
-pub struct Entrypoint<'lib> {
-    ptr: *mut ctru_sys::DVLE_s,
-    _library: &'lib Library,
+#[allow(dead_code)]
+enum MaybeRc<T> {
+    Owned(T),
+    Shared(Rc<T>),
 }
 
-impl<'lib> Entrypoint<'lib> {
-    fn as_raw(self) -> *mut ctru_sys::DVLE_s {
+/// A shader library entrypoint (also called DVLE). This represents either a
+/// vertex or a geometry shader.
+pub struct Entrypoint {
+    ptr: *mut ctru_sys::DVLE_s,
+    _library: MaybeRc<Library>,
+}
+
+impl Entrypoint {
+    fn as_raw(&mut self) -> *mut ctru_sys::DVLE_s {
         self.ptr
     }
 }

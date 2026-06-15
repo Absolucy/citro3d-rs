@@ -1,9 +1,7 @@
-//! This example demonstrates the most basic usage of `citro3d`: rendering a simple
-//! RGB triangle (sometimes called a "Hello triangle") to the 3DS screen.
+// This examples demonstrates loading a shader into memory at runtime
 
 #![feature(allocator_api)]
 
-use citro3d::macros::include_shader;
 use citro3d::math::{AspectRatio, ClipPlanes, Matrix4, Projection, StereoDisplacement};
 use citro3d::render::{ClearFlags, Frame, ScreenTarget, Target};
 use citro3d::texenv;
@@ -25,19 +23,28 @@ impl Vec3 {
     }
 }
 
-static VERTEX_POSITIONS: &[Vec3] = &[
-    Vec3::new(0.0, 0.5, -3.0),
-    Vec3::new(-0.5, -0.5, -3.0),
-    Vec3::new(0.5, -0.5, -3.0),
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Vertex {
+    pos: Vec3,
+    color: Vec3,
+}
+
+static VERTICES: &[Vertex] = &[
+    Vertex {
+        pos: Vec3::new(0.0, 0.5, -3.0),
+        color: Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(-0.5, -0.5, -3.0),
+        color: Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: Vec3::new(0.5, -0.5, -3.0),
+        color: Vec3::new(0.0, 0.0, 1.0),
+    },
 ];
 
-static VERTEX_COLS: &[Vec3] = &[
-    Vec3::new(1.0, 0.0, 0.0),
-    Vec3::new(0.0, 1.0, 0.0),
-    Vec3::new(0.0, 0.0, 1.0),
-];
-
-static SHADER_BYTES: &[u8] = include_shader!("assets/vshader.pica");
 const CLEAR_COLOR: u32 = 0x68_B0_D8_FF;
 
 fn main() {
@@ -71,17 +78,22 @@ fn main() {
         .render_target(width, height, bottom_screen, None)
         .expect("failed to create bottom screen render target");
 
-    let shader = shader::Library::from_bytes(SHADER_BYTES).unwrap();
+    let _romfs = ctru::services::romfs::RomFS::new().unwrap();
+
+    let shader = {
+        let shader_bytes = std::fs::read("romfs:/vshader.shbin").unwrap();
+        shader::Library::from_bytes(shader_bytes).unwrap()
+    };
+
     let vertex_shader = shader.get(0).unwrap();
 
     let program = shader::Program::new(vertex_shader).unwrap();
     let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
 
-    let vbo_pos = buffer::Buffer::new(VERTEX_POSITIONS);
-    let vbo_col = buffer::Buffer::new(VERTEX_COLS);
+    let vbo_data = buffer::Buffer::new(VERTICES);
 
     let mut buf_info = buffer::Info::new();
-    let attr_info = prepare_vbos(&mut buf_info, vbo_pos, vbo_col);
+    let attr_info = prepare_vbos(&mut buf_info, vbo_data);
 
     let stage0 = texenv::TexEnv::new()
         .src(texenv::Mode::BOTH, texenv::Source::PrimaryColor, None, None)
@@ -142,29 +154,19 @@ fn main() {
     }
 }
 
-fn prepare_vbos(
-    buf_info: &mut buffer::Info,
-    positions: buffer::Buffer,
-    cols: buffer::Buffer,
-) -> attrib::Info {
-    use attrib::{Format, Info, Permutation, Register};
-
-    const REG_POS: Register = Register::V0;
-    const REG_COL: Register = Register::V1;
-
+fn prepare_vbos(buf_info: &mut buffer::Info, vbo_data: buffer::Buffer) -> attrib::Info {
     // Configure attributes for use with the vertex shader
-    let mut attr_info = Info::new();
+    let mut attr_info = attrib::Info::new();
 
-    attr_info.add_loader(REG_POS, Format::Float, 3).unwrap();
-
-    attr_info.add_loader(REG_COL, Format::Float, 3).unwrap();
-
-    buf_info
-        .add(positions, Permutation::from_layout(&[REG_POS]).unwrap())
+    attr_info
+        .add_loader(attrib::Register::V0, attrib::Format::Float, 3)
         .unwrap();
-    buf_info
-        .add(cols, Permutation::from_layout(&[REG_COL]).unwrap())
+
+    attr_info
+        .add_loader(attrib::Register::V1, attrib::Format::Float, 3)
         .unwrap();
+
+    buf_info.add(vbo_data, attr_info.permutation()).unwrap();
 
     attr_info
 }

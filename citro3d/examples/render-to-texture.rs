@@ -113,7 +113,7 @@ fn main() {
     let vertex_shader = shader.get(0).unwrap();
 
     let program = shader::Program::new(vertex_shader).unwrap();
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
+    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
 
     let vbo_data = buffer::Buffer::new(VERTICES);
 

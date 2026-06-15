@@ -128,7 +128,7 @@ fn main() {
     let mut buf_info = buffer::Info::new();
     buf_info.add(vbo_data, attr_info.permutation()).unwrap();
 
-    let projection_uniform_idx = program.get_uniform("projection").unwrap();
+    let projection_uniform_idx = program.get_vertex_uniform("projection").unwrap();
     let camera_transform = Matrix4::looking_at(
         FVec3::new(1.8, 1.8, 1.8),
         FVec3::new(0.0, 0.0, 0.0),
